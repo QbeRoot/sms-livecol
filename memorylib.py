@@ -163,6 +163,26 @@ class Dolphin(object):
     def write_ram(self, offset, data):
         self.memory.buf[offset:offset+len(data)] = data
     
+    def read_uint8(self, addr):
+        assert addr >= 0x80000000
+        value = self.read_ram(addr-0x80000000, 1)
+
+        return unpack(">B", value)[0]
+    
+    def write_uint8(self, addr, val):
+        assert addr >= 0x80000000
+        return self.write_ram(addr - 0x80000000, pack(">B", val))
+    
+    def read_uint16(self, addr):
+        assert addr >= 0x80000000
+        value = self.read_ram(addr-0x80000000, 2)
+
+        return unpack(">H", value)[0]
+    
+    def write_uint16(self, addr, val):
+        assert addr >= 0x80000000
+        return self.write_ram(addr - 0x80000000, pack(">H", val))
+    
     def read_uint32(self, addr):
         assert addr >= 0x80000000
         value = self.read_ram(addr-0x80000000, 4)
