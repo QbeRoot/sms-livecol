@@ -1,5 +1,7 @@
 import sys, pyrr
 
+from enum import IntEnum
+
 from PyQt5 import QtCore
 from PyQt5 import QtGui
 from PyQt5 import QtWidgets
@@ -14,8 +16,11 @@ from numpy import array
 
 from memorylib import Dolphin
 
+PlaneType = IntEnum('SurfaceType', 'FLOOR WATER ROOF WALLZ WALLX CUBE')
+
 class CollisionViewer(QtWidgets.QOpenGLWidget):
 	gpCamera = 0
+	gpCubeFastA = 0
 	gpMapCollisionData = 0
 
 	def __init__(self, dolphin: Dolphin, parent=None):
@@ -26,8 +31,10 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 		self.frameSwapped.connect(self.update)
 
 	def initializeGL(self) -> None:
-		glEnable(GL_DEPTH_TEST)
+		glEnable(GL_BLEND)
 		glEnable(GL_CULL_FACE)
+		glEnable(GL_DEPTH_TEST)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 		glClearColor(0.7, 0.7, 1.0, 0.0)
 
 		self.shader = shaders.compileProgram(
@@ -38,19 +45,26 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				layout (location = 0) in vec3 position;
 				layout (location = 1) in float type;
 
+				out vec4 vBorderColor;
 				out vec4 vVertexColor;
 
 				void main() {
 					gl_Position = projMat * viewMat * vec4(position, 1.0);
+
+					vBorderColor = vec4(0, 0, 0, 1);
 					
-					if (type == 0) {
+					if (type == """ + str(int(PlaneType.FLOOR)) + """) {
 						vVertexColor = vec4(0, 0, 1, 1);
-					} else if (type == 1) {
+					} else if (type == """ + str(int(PlaneType.WATER)) + """) {
+						vVertexColor = vec4(0, 0, 1, 1); // TODO: transparency without breaking the depth test
+					} else if (type == """ + str(int(PlaneType.ROOF)) + """) {
 						vVertexColor = vec4(1, 0, 0, 1);
-					} else if (type == 2) {
+					} else if (type == """ + str(int(PlaneType.WALLZ)) + """) {
 						vVertexColor = vec4(0, 1, 0, 1);
-					} else if (type == 3) {
+					} else if (type == """ + str(int(PlaneType.WALLX)) + """) {
 						vVertexColor = vec4(0, 0.5, 0, 1);
+					} else if (type == """ + str(int(PlaneType.CUBE)) + """) {
+						vBorderColor = vVertexColor = vec4(1, 0.5, 0, 0.5);
 					} else {
 						vVertexColor = vec4(0.5, 0.5, 0.5, 1);
 					}
@@ -59,9 +73,11 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				layout(triangles) in;
 				layout(triangle_strip, max_vertices = 3) out;
 
+				in vec4 vBorderColor[3];
 				in vec4 vVertexColor[3];
 				out vec3 gTriDistance;
 				out float gTriSize;
+				out vec4 gBorderColor;
 				out vec4 gVertexColor;
 
 				void main() {
@@ -70,16 +86,19 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 							distance(gl_in[1].gl_Position, gl_in[2].gl_Position));
 
 					gTriDistance = vec3(1, 0, 0);
+					gBorderColor = vBorderColor[0];
 					gVertexColor = vVertexColor[0];
 					gl_Position = gl_in[0].gl_Position;
 					EmitVertex();
 
 					gTriDistance = vec3(0, 1, 0);
+					gBorderColor = vBorderColor[1];
 					gVertexColor = vVertexColor[1];
 					gl_Position = gl_in[1].gl_Position;
 					EmitVertex();
 
 					gTriDistance = vec3(0, 0, 1);
+					gBorderColor = vBorderColor[2];
 					gVertexColor = vVertexColor[2];
 					gl_Position = gl_in[2].gl_Position;
 					EmitVertex();
@@ -89,6 +108,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				shaders.compileShader("""#version 330 core
 				in vec3 gTriDistance;
 				in float gTriSize;
+				in vec4 gBorderColor;
 				in vec4 gVertexColor;
 				out vec4 color;
 
@@ -101,7 +121,8 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 
 				void main() {
 					float d1 = min(min(gTriDistance.x, gTriDistance.y), gTriDistance.z);
-    				color = smoothstep(0, fwidth(d1), d1) * gVertexColor;
+					float step = smoothstep(0, fwidth(d1), d1);
+    				color = step * gVertexColor + (1 - step) * gBorderColor;
 				}""", GL_FRAGMENT_SHADER))
 		
 		self.vao = glGenVertexArrays(1)
@@ -134,6 +155,11 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				[self.dolphin.read_float(camera + 0x124), self.dolphin.read_float(camera + 0x128), self.dolphin.read_float(camera + 0x12C)],
 				[self.dolphin.read_float(camera + 0x148), self.dolphin.read_float(camera + 0x14C), self.dolphin.read_float(camera + 0x150)],
 				[self.dolphin.read_float(camera + 0x30), self.dolphin.read_float(camera + 0x34), self.dolphin.read_float(camera + 0x38)])
+
+		floors = set()
+		roofs = set()
+		walls = set()
+		cubes = set()
 		
 		mapColData = self.dolphin.read_uint32(self.gpMapCollisionData)
 		if mapColData == 0:
@@ -142,10 +168,6 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 		checkListCount = self.dolphin.read_uint32(mapColData + 0x10)
 		checkLists1 = self.dolphin.read_uint32(mapColData + 0x14)
 		checkLists2 = self.dolphin.read_uint32(mapColData + 0x18)
-
-		floors = set()
-		roofs = set()
-		walls = set()
 
 		for i in range(checkListCount):
 			if checkLists1 != 0:
@@ -158,28 +180,72 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				roofs |= self.getCheckData(self.dolphin.read_uint32(checkLists2 + 0x24 * i + 0x10))
 				walls |= self.getCheckData(self.dolphin.read_uint32(checkLists2 + 0x24 * i + 0x1C))
 		
+		for i in range(3):
+			cube = self.dolphin.read_uint32(self.gpCubeFastA + 4 * i)
+			if cube < 0x80000000:
+				continue
+			
+			length = self.dolphin.read_uint8(cube + 0x10)
+			infoptr = self.dolphin.read_uint32(cube + 0x14)
+			if infoptr < 0x80000000:
+				continue
+
+			info = self.dolphin.read_uint32(infoptr + 0x10)
+			if info < 0x80000000:
+				continue
+
+			for j in range(length):
+				cubes.add(self.dolphin.read_uint32(info + 4 * j))
+		
 		buffer = []
 
 		for f in floors:
+			ptype = PlaneType.WATER if self.dolphin.read_uint16(f) in [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104] else PlaneType.FLOOR
 			buffer += [
-				[self.dolphin.read_float(f + 0x10), self.dolphin.read_float(f + 0x14), self.dolphin.read_float(f + 0x18), 0],
-				[self.dolphin.read_float(f + 0x1C), self.dolphin.read_float(f + 0x20), self.dolphin.read_float(f + 0x24), 0],
-				[self.dolphin.read_float(f + 0x28), self.dolphin.read_float(f + 0x2C), self.dolphin.read_float(f + 0x30), 0]
+				[self.dolphin.read_float(f + 0x10), self.dolphin.read_float(f + 0x14), self.dolphin.read_float(f + 0x18), ptype],
+				[self.dolphin.read_float(f + 0x1C), self.dolphin.read_float(f + 0x20), self.dolphin.read_float(f + 0x24), ptype],
+				[self.dolphin.read_float(f + 0x28), self.dolphin.read_float(f + 0x2C), self.dolphin.read_float(f + 0x30), ptype]
 			]
 
 		for r in roofs:
 			buffer += [
-				[self.dolphin.read_float(r + 0x10), self.dolphin.read_float(r + 0x14), self.dolphin.read_float(r + 0x18), 1],
-				[self.dolphin.read_float(r + 0x1C), self.dolphin.read_float(r + 0x20), self.dolphin.read_float(r + 0x24), 1],
-				[self.dolphin.read_float(r + 0x28), self.dolphin.read_float(r + 0x2C), self.dolphin.read_float(r + 0x30), 1]
+				[self.dolphin.read_float(r + 0x10), self.dolphin.read_float(r + 0x14), self.dolphin.read_float(r + 0x18), PlaneType.ROOF],
+				[self.dolphin.read_float(r + 0x1C), self.dolphin.read_float(r + 0x20), self.dolphin.read_float(r + 0x24), PlaneType.ROOF],
+				[self.dolphin.read_float(r + 0x28), self.dolphin.read_float(r + 0x2C), self.dolphin.read_float(r + 0x30), PlaneType.ROOF]
 			]
 
 		for w in walls:
-			proj = 3 if self.dolphin.read_uint16(w + 0x4) & 0x8 else 2
+			ptype = PlaneType.WALLX if self.dolphin.read_uint16(w + 0x4) & 0x8 else PlaneType.WALLZ
 			buffer += [
-				[self.dolphin.read_float(w + 0x10), self.dolphin.read_float(w + 0x14), self.dolphin.read_float(w + 0x18), proj],
-				[self.dolphin.read_float(w + 0x1C), self.dolphin.read_float(w + 0x20), self.dolphin.read_float(w + 0x24), proj],
-				[self.dolphin.read_float(w + 0x28), self.dolphin.read_float(w + 0x2C), self.dolphin.read_float(w + 0x30), proj]
+				[self.dolphin.read_float(w + 0x10), self.dolphin.read_float(w + 0x14), self.dolphin.read_float(w + 0x18), ptype],
+				[self.dolphin.read_float(w + 0x1C), self.dolphin.read_float(w + 0x20), self.dolphin.read_float(w + 0x24), ptype],
+				[self.dolphin.read_float(w + 0x28), self.dolphin.read_float(w + 0x2C), self.dolphin.read_float(w + 0x30), ptype]
+			]
+		
+		for c in cubes:
+			cx, cy, cz = self.dolphin.read_float(c + 0xC), self.dolphin.read_float(c + 0x10), self.dolphin.read_float(c + 0x14)
+			dx, dy, dz = self.dolphin.read_float(c + 0x24), self.dolphin.read_float(c + 0x28), self.dolphin.read_float(c + 0x2C)
+
+			v = [
+				[cx - .5 * dx, cy, cz - .5 * dz, PlaneType.CUBE], [cx - .5 * dx, cy + dy, cz - .5 * dz, PlaneType.CUBE],
+				[cx - .5 * dx, cy, cz + .5 * dz, PlaneType.CUBE], [cx - .5 * dx, cy + dy, cz + .5 * dz, PlaneType.CUBE],
+				[cx + .5 * dx, cy, cz + .5 * dz, PlaneType.CUBE], [cx + .5 * dx, cy + dy, cz + .5 * dz, PlaneType.CUBE],
+				[cx + .5 * dx, cy, cz - .5 * dz, PlaneType.CUBE], [cx + .5 * dx, cy + dy, cz - .5 * dz, PlaneType.CUBE]
+			]
+
+			buffer += [
+				v[0], v[1], v[2], v[1], v[3], v[2], # inward -x
+				v[2], v[3], v[4], v[3], v[5], v[4], # inward +z
+				v[4], v[5], v[6], v[5], v[7], v[6], # inward +x
+				v[6], v[7], v[0], v[7], v[1], v[0], # inward -z
+				v[0], v[2], v[4], v[0], v[4], v[6], # inward -y
+				v[1], v[5], v[3], v[1], v[7], v[5], # inward +y
+				v[0], v[2], v[1], v[1], v[2], v[3], # outward -x
+				v[2], v[4], v[3], v[3], v[4], v[5], # outward +z
+				v[4], v[6], v[5], v[5], v[6], v[7], # outward +x
+				v[6], v[0], v[7], v[7], v[0], v[1], # outward -z
+				v[0], v[4], v[2], v[0], v[6], v[4], # outward -y
+				v[1], v[3], v[5], v[1], v[5], v[7], # outward +y
 			]
 		
 		glUseProgram(self.shader)
@@ -222,12 +288,12 @@ def connect():
 		status.showMessage('Current game is not Sunshine')
 		return
 	
-	viewer.gpCamera, viewer.gpMapCollisionData = {
-		0x23: (0x8040B370, 0x8040A578), # JP 1.0
-		0xA3: (0x8040D0A8, 0x8040DEA0), # NA / KOR
-		0x41: (0x80404808, 0x80405568), # PAL
-		0x80: (0x803FFA38, 0x803FED40), # JP 1.1
-		0x4D: (0x80401D08, 0x80402A68), # 3DAS
+	viewer.gpCamera, viewer.gpCubeFastA, viewer.gpMapCollisionData = {
+		0x23: (0x8040B370, 0x8040B3B0, 0x8040A578), # JP 1.0
+		0xA3: (0x8040D0A8, 0x8040D0E8, 0x8040DEA0), # NA / KOR
+		0x41: (0x80404808, 0x80404848, 0x80405568), # PAL
+		0x80: (0x803FFA38, 0x803FFA78, 0x803FED40), # JP 1.1
+		0x4D: (0x80401D08, 0x80401D48, 0x80402A68), # 3DAS
 	}.get(dolphin.read_uint8(0x80365DDD))
 
 	status.showMessage('Ready')
