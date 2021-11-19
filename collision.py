@@ -1,4 +1,5 @@
 import sys, pyrr
+import traceback
 
 from enum import IntEnum
 
@@ -12,11 +13,12 @@ from OpenGL.GLU import *
 from OpenGL.arrays import vbo
 from OpenGL.GL import shaders
 
-from numpy import array
+from numpy import array, pi, cos, sin
+tau = 2*pi
 
 from memorylib import Dolphin
 
-PlaneType = IntEnum('SurfaceType', 'FLOOR WATER ROOF WALLZ WALLX CUBE')
+PlaneType = IntEnum('SurfaceType', 'FLOOR WATER ROOF WALLZ WALLX CUBE MARIO')
 
 class CollisionViewer(QtWidgets.QOpenGLWidget):
 	gpCamera = 0
@@ -56,7 +58,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 					if (type == """ + str(int(PlaneType.FLOOR)) + """) {
 						vVertexColor = vec4(0, 0, 1, 1);
 					} else if (type == """ + str(int(PlaneType.WATER)) + """) {
-						vVertexColor = vec4(0, 0, 1, 1); // TODO: transparency without breaking the depth test
+						vVertexColor = vec4(0, 1, 1, 1); // TODO: transparency without breaking the depth test
 					} else if (type == """ + str(int(PlaneType.ROOF)) + """) {
 						vVertexColor = vec4(1, 0, 0, 1);
 					} else if (type == """ + str(int(PlaneType.WALLZ)) + """) {
@@ -65,6 +67,8 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 						vVertexColor = vec4(0, 0.5, 0, 1);
 					} else if (type == """ + str(int(PlaneType.CUBE)) + """) {
 						vBorderColor = vVertexColor = vec4(1, 0.5, 0, 0.5);
+					} else if (type == """ + str(int(PlaneType.MARIO)) + """) {
+						vBorderColor = vVertexColor = vec4(1, 0, 1, 0.5); // TODO
 					} else {
 						vVertexColor = vec4(0.5, 0.5, 0.5, 1);
 					}
@@ -140,6 +144,11 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 
 	
 	def paintGL(self) -> None:
+		try: # prevent crashing on level transition
+			self._paintGL()
+		except:
+			traceback.print_exc()
+	def _paintGL(self) -> None:
 		if self.gpCamera == 0 or self.gpMapCollisionData == 0:
 			return
 
@@ -199,6 +208,30 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 		
 		buffer = []
 
+		# Mario's hitbox
+		ptrMario = self.dolphin.read_uint32(self.gpMario)
+		xc, y0, zc = (self.dolphin.read_float(ptrMario+i) for i in (0x10, 0x14, 0x18))
+		y1 = y0+160 # height
+		r = 50 # radius
+		n = 12 # 12-sided polygon as circle
+		pt = PlaneType.MARIO
+		## loop each side
+		th = 0
+		for i in range(1, n+1):
+			th0, th = th, tau*i/n
+			x0 = xc+r*cos(th0)
+			x1 = xc+r*cos(th )
+			z0 = zc+r*sin(th0)
+			z1 = zc+r*sin(th )
+			buffer += [
+				# bottom and top triangle
+				[xc, y0, zc, pt], [x1, y0, z1, pt], [x0, y0, z0, pt],
+				[xc, y1, zc, pt], [x1, y1, z1, pt], [x0, y1, z0, pt],
+				# side rectangle
+				[x0, y0, z0, pt], [x1, y1, z1, pt], [x1, y0, z1, pt],
+				[x1, y1, z1, pt], [x0, y0, z0, pt], [x0, y1, z0, pt],
+			]
+
 		for f in floors:
 			ptype = PlaneType.WATER if self.dolphin.read_uint16(f) in [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104] else PlaneType.FLOOR
 			buffer += [
@@ -247,7 +280,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				v[0], v[4], v[2], v[0], v[6], v[4], # outward -y
 				v[1], v[3], v[5], v[1], v[5], v[7], # outward +y
 			]
-		
+
 		glUseProgram(self.shader)
 
 		glUniformMatrix4fv(glGetUniformLocation(self.shader, 'projMat'), 1, False, projMat)
@@ -287,13 +320,13 @@ def connect():
 	if dolphin.read_ram(0, 3).tobytes() != b'GMS':
 		status.showMessage('Current game is not Sunshine')
 		return
-	
-	viewer.gpCamera, viewer.gpCubeFastA, viewer.gpMapCollisionData = {
-		0x23: (0x8040B370, 0x8040B3B0, 0x8040A578), # JP 1.0
-		0xA3: (0x8040D0A8, 0x8040D0E8, 0x8040DEA0), # NA / KOR
-		0x41: (0x80404808, 0x80404848, 0x80405568), # PAL
-		0x80: (0x803FFA38, 0x803FFA78, 0x803FED40), # JP 1.1
-		0x4D: (0x80401D08, 0x80401D48, 0x80402A68), # 3DAS
+
+	viewer.gpCamera, viewer.gpCubeFastA, viewer.gpMapCollisionData, viewer.gpMario = {
+		0x23: (0x8040B370, 0x8040B3B0, 0x8040A578, 0x8040A378), # JP 1.0
+		0xA3: (0x8040D0A8, 0x8040D0E8, 0x8040DEA0, 0x8040E0E8), # NA / KOR
+		0x41: (0x80404808, 0x80404848, 0x80405568, 0x804057B0), # PAL
+		0x80: (0x803FFA38, 0x803FFA78, 0x803FED40, 0x8040A378), # JP 1.1
+		0x4D: (0x80401D08, 0x80401D48, 0x80402A68, None), # 3DAS FIXME
 	}.get(dolphin.read_uint8(0x80365DDD))
 
 	status.showMessage('Ready')
