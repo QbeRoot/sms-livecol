@@ -18,12 +18,13 @@ tau = 2*pi
 
 from memorylib import Dolphin
 
-PlaneType = IntEnum('SurfaceType', 'FLOOR WATER ROOF WALLZ WALLX CUBE MARIO')
+PlaneType = IntEnum('SurfaceType', 'FLOOR WATER ROOF WALLZ WALLX CUBE HITBOX')
 
 class CollisionViewer(QtWidgets.QOpenGLWidget):
 	gpCamera = 0
 	gpCubeFastA = 0
 	gpMapCollisionData = 0
+	gpMarioOriginal = 0
 
 	def __init__(self, dolphin: Dolphin, parent=None):
 		self.dolphin = dolphin
@@ -67,7 +68,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 						vVertexColor = vec4(0, 0.5, 0, 1);
 					} else if (type == """ + str(int(PlaneType.CUBE)) + """) {
 						vBorderColor = vVertexColor = vec4(1, 0.5, 0, 0.5);
-					} else if (type == """ + str(int(PlaneType.MARIO)) + """) {
+					} else if (type == """ + str(int(PlaneType.HITBOX)) + """) {
 						vBorderColor = vVertexColor = vec4(1, 0, 1, 0.5); // TODO
 					} else {
 						vVertexColor = vec4(0.5, 0.5, 0.5, 1);
@@ -142,12 +143,40 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 
 		return out
 
+	def makeCylinder(self, x, y, z, h, r, n, pt = PlaneType.HITBOX):
+		"""Return a list of triangles approximating a cylinder oriented along the Y axis.
+
+		x, y, z -- coordinates of the center of the cylinder's base
+		h -- height of the cylinder
+		r -- radius of the cylinder
+		n -- number of sides of the polygon used in place of the circular faces
+		"""
+		result = []
+		y1 = y + h # height
+
+		## loop each side
+		th = 0
+		for i in range(1, n + 1):
+			th0, th = th, tau * i / n
+			x0 = x + r * cos(th0)
+			z0 = z + r * sin(th0)
+			x1 = x + r * cos(th)
+			z1 = z + r * sin(th)
+			result += [
+				# bottom and top triangle
+				[x, y, z, pt], [x1, y, z1, pt], [x0, y, z0, pt],
+				[x, y1, z, pt], [x1, y1, z1, pt], [x0, y1, z0, pt],
+				# side rectangle
+				[x0, y, z0, pt], [x1, y1, z1, pt], [x1, y, z1, pt],
+				[x1, y1, z1, pt], [x0, y, z0, pt], [x0, y1, z0, pt],
+			]
 	
 	def paintGL(self) -> None:
 		try: # prevent crashing on level transition
 			self._paintGL()
 		except:
 			traceback.print_exc()
+	
 	def _paintGL(self) -> None:
 		if self.gpCamera == 0 or self.gpMapCollisionData == 0:
 			return
@@ -209,28 +238,9 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 		buffer = []
 
 		# Mario's hitbox
-		ptrMario = self.dolphin.read_uint32(self.gpMario)
-		xc, y0, zc = (self.dolphin.read_float(ptrMario+i) for i in (0x10, 0x14, 0x18))
-		y1 = y0+160 # height
-		r = 50 # radius
-		n = 12 # 12-sided polygon as circle
-		pt = PlaneType.MARIO
-		## loop each side
-		th = 0
-		for i in range(1, n+1):
-			th0, th = th, tau*i/n
-			x0 = xc+r*cos(th0)
-			x1 = xc+r*cos(th )
-			z0 = zc+r*sin(th0)
-			z1 = zc+r*sin(th )
-			buffer += [
-				# bottom and top triangle
-				[xc, y0, zc, pt], [x1, y0, z1, pt], [x0, y0, z0, pt],
-				[xc, y1, zc, pt], [x1, y1, z1, pt], [x0, y1, z0, pt],
-				# side rectangle
-				[x0, y0, z0, pt], [x1, y1, z1, pt], [x1, y0, z1, pt],
-				[x1, y1, z1, pt], [x0, y0, z0, pt], [x0, y1, z0, pt],
-			]
+		ptrMario = self.dolphin.read_uint32(self.gpMarioOriginal)
+		x, y, z = (self.dolphin.read_float(ptrMario+i) for i in (0x10, 0x14, 0x18))
+		buffer += self.makeCylinder(x, y, z, 160, 50, 12)
 
 		for f in floors:
 			ptype = PlaneType.WATER if self.dolphin.read_uint16(f) in [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104] else PlaneType.FLOOR
@@ -321,12 +331,12 @@ def connect():
 		status.showMessage('Current game is not Sunshine')
 		return
 
-	viewer.gpCamera, viewer.gpCubeFastA, viewer.gpMapCollisionData, viewer.gpMario = {
+	viewer.gpCamera, viewer.gpCubeFastA, viewer.gpMapCollisionData, viewer.gpMarioOriginal = {
 		0x23: (0x8040B370, 0x8040B3B0, 0x8040A578, 0x8040A378), # JP 1.0
 		0xA3: (0x8040D0A8, 0x8040D0E8, 0x8040DEA0, 0x8040E0E8), # NA / KOR
 		0x41: (0x80404808, 0x80404848, 0x80405568, 0x804057B0), # PAL
-		0x80: (0x803FFA38, 0x803FFA78, 0x803FED40, 0x8040A378), # JP 1.1
-		0x4D: (0x80401D08, 0x80401D48, 0x80402A68, None), # 3DAS FIXME
+		0x80: (0x803FFA38, 0x803FFA78, 0x803FED40, 0x803FEF88), # JP 1.1
+		0x4D: (0x80401D08, 0x80401D48, 0x80402A68, 0x80402CB0), # 3DAS
 	}.get(dolphin.read_uint8(0x80365DDD))
 
 	status.showMessage('Ready')
