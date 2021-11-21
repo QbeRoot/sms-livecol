@@ -172,7 +172,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				[x1, y1, z1, pt], [x0, y, z0, pt], [x0, y1, z0, pt],
 			]
 
-			return result
+		return result
 	
 	def paintGL(self) -> None:
 		try: # prevent crashing on level transition
