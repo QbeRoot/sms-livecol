@@ -13,7 +13,7 @@ from OpenGL.GLU import *
 from OpenGL.arrays import vbo
 from OpenGL.GL import shaders
 
-from numpy import array, pi, cos, sin
+from numpy import array, pi, cos, sin, concatenate as concat
 tau = 2*pi
 
 from memorylib import Dolphin
@@ -59,7 +59,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 					if (type == """ + str(int(PlaneType.FLOOR)) + """) {
 						vVertexColor = vec4(0, 0, 1, 1);
 					} else if (type == """ + str(int(PlaneType.WATER)) + """) {
-						vVertexColor = vec4(0, 1, 1, 1); // TODO: transparency without breaking the depth test
+						vVertexColor = vec4(0, 0.8, 1, 0.6);
 					} else if (type == """ + str(int(PlaneType.ROOF)) + """) {
 						vVertexColor = vec4(1, 0, 0, 1);
 					} else if (type == """ + str(int(PlaneType.WALLZ)) + """) {
@@ -69,7 +69,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 					} else if (type == """ + str(int(PlaneType.CUBE)) + """) {
 						vBorderColor = vVertexColor = vec4(1, 0.5, 0, 0.5);
 					} else if (type == """ + str(int(PlaneType.HITBOX)) + """) {
-						vBorderColor = vVertexColor = vec4(1, 0, 1, 0.5); // TODO
+						vBorderColor = vVertexColor = vec4(1, 0.5, 1, 0.7);
 					} else {
 						vVertexColor = vec4(0.5, 0.5, 0.5, 1);
 					}
@@ -165,7 +165,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 			z1 = z + r * sin(th)
 			result += [
 				# bottom and top triangle
-				[x, y, z, pt], [x1, y, z1, pt], [x0, y, z0, pt],
+				[x, y, z, pt], [x0, y, z0, pt], [x1, y, z1, pt],
 				[x, y1, z, pt], [x1, y1, z1, pt], [x0, y1, z0, pt],
 				# side rectangle
 				[x0, y, z0, pt], [x1, y1, z1, pt], [x1, y, z1, pt],
@@ -237,24 +237,27 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 
 			for j in range(length):
 				cubes.add(self.dolphin.read_uint32(info + 4 * j))
-		
-		buffer = []
+
+		bufOpaque = [] # faces with alpha==1
+		bufAlpha = [] # faces with alpha<1
+		buffers = [bufOpaque, bufAlpha]
 
 		# Mario's hitbox
 		ptrMario = self.dolphin.read_uint32(self.gpMarioOriginal)
 		x, y, z = (self.dolphin.read_float(ptrMario+i) for i in (0x10, 0x14, 0x18))
-		buffer += self.makeCylinder(x, y, z, 160, 50, 12)
+		bufAlpha += self.makeCylinder(x, y, z, 160, 50, 12)
 
 		for f in floors:
-			ptype = PlaneType.WATER if self.dolphin.read_uint16(f) in [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104] else PlaneType.FLOOR
-			buffer += [
+			isWater = self.dolphin.read_uint16(f) in [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104]
+			ptype = PlaneType.WATER if isWater else PlaneType.FLOOR
+			buffers[1 if isWater else 0] += [ # [1]=bufAlpha(WATER), [0]=bufOpaque(FLOOR)
 				[self.dolphin.read_float(f + 0x10), self.dolphin.read_float(f + 0x14), self.dolphin.read_float(f + 0x18), ptype],
 				[self.dolphin.read_float(f + 0x1C), self.dolphin.read_float(f + 0x20), self.dolphin.read_float(f + 0x24), ptype],
 				[self.dolphin.read_float(f + 0x28), self.dolphin.read_float(f + 0x2C), self.dolphin.read_float(f + 0x30), ptype]
 			]
 
 		for r in roofs:
-			buffer += [
+			bufOpaque += [
 				[self.dolphin.read_float(r + 0x10), self.dolphin.read_float(r + 0x14), self.dolphin.read_float(r + 0x18), PlaneType.ROOF],
 				[self.dolphin.read_float(r + 0x1C), self.dolphin.read_float(r + 0x20), self.dolphin.read_float(r + 0x24), PlaneType.ROOF],
 				[self.dolphin.read_float(r + 0x28), self.dolphin.read_float(r + 0x2C), self.dolphin.read_float(r + 0x30), PlaneType.ROOF]
@@ -262,7 +265,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 
 		for w in walls:
 			ptype = PlaneType.WALLX if self.dolphin.read_uint16(w + 0x4) & 0x8 else PlaneType.WALLZ
-			buffer += [
+			bufOpaque += [
 				[self.dolphin.read_float(w + 0x10), self.dolphin.read_float(w + 0x14), self.dolphin.read_float(w + 0x18), ptype],
 				[self.dolphin.read_float(w + 0x1C), self.dolphin.read_float(w + 0x20), self.dolphin.read_float(w + 0x24), ptype],
 				[self.dolphin.read_float(w + 0x28), self.dolphin.read_float(w + 0x2C), self.dolphin.read_float(w + 0x30), ptype]
@@ -279,7 +282,7 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 				[cx + .5 * dx, cy, cz - .5 * dz, PlaneType.CUBE], [cx + .5 * dx, cy + dy, cz - .5 * dz, PlaneType.CUBE]
 			]
 
-			buffer += [
+			bufAlpha += [
 				v[0], v[1], v[2], v[1], v[3], v[2], # inward -x
 				v[2], v[3], v[4], v[3], v[5], v[4], # inward +z
 				v[4], v[5], v[6], v[5], v[7], v[6], # inward +x
@@ -300,7 +303,8 @@ class CollisionViewer(QtWidgets.QOpenGLWidget):
 		glUniformMatrix4fv(glGetUniformLocation(self.shader, 'viewMat'), 1, False, viewMat)
 
 		glBindVertexArray(self.vao)
-		vertexBuffer = vbo.VBO(array(buffer, 'f'))
+		buffer = concat(buffers, dtype='f')
+		vertexBuffer = vbo.VBO(buffer)
 		try:
 			vertexBuffer.bind()
 			try:
